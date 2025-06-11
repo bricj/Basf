@@ -28,25 +28,21 @@
 # # Iniciar API con migración automática integrada
 # CMD ["python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
 
-FROM python:3.9-slim
+# Imagen base oficial de Python
+FROM python:3.11-slim
 
-RUN apt-get update && apt-get install -y gcc libpq-dev && rm -rf /var/lib/apt/lists/*
-
+# Establecer el directorio de trabajo
 WORKDIR /app
 
+# Copiar archivos
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY src/api/main.py .
-RUN mkdir -p /app/data
-COPY src/api/data/data.xlsx /app/data/data.xlsx
-RUN ls -la /app/data/
+# Copiar el resto del código
+COPY . .
 
-RUN useradd -m basf && chown -R basf:basf /app
-USER basf
-
-ENV PATH=/home/basf/.local/bin:/usr/local/bin:/usr/bin:/bin
-
+# Puerto para Render
 EXPOSE 8000
 
-CMD ["python3", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Comando para iniciar FastAPI con Uvicorn
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
