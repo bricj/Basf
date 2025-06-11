@@ -335,8 +335,7 @@ async def get_data():
         return {
             # "total": len(records),
             # "source": "basf_optimized_data",
-            # "data": [dict(record) for record in records]
-            [dict(record) for record in records]
+             "data": [dict(record) for record in records]
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
