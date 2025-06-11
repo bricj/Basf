@@ -369,127 +369,129 @@
 
 # -----------------------------------------
 
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-from typing import List
-import pandas as pd
-from sqlalchemy import create_engine
 import psycopg2
 from psycopg2.extras import RealDictCursor
+import pandas as pd
+from sqlalchemy import create_engine
 import os
 import time
+import logging
 
-# Configuración general
-app = FastAPI()
+# Configuración
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-# Reemplaza con tus variables reales o usa dotenv/env
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://user:password@host:port/db")
-EXCEL_PATH = "/path/to/your/excel_file.xlsx"  # Cambia a la ruta real del archivo
+app = FastAPI(title="BASF Data API", version="1.0.0")
 
-# CORS
+# Middleware CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Endpoint para cargar el Excel a PostgreSQL
-@app.get("/refresh")
-async def refresh_database():
+# URL explícita de PostgreSQL (Render, etc.)
+DATABASE_URL = "postgresql://basf:F8utfvZuhQnp1cHvbOZlgqLOKHhVDkby@dpg-d14ht7muk2gs73at72a0-a.oregon-postgres.render.com/basf_db"
+
+# Verificar conexión a PostgreSQL
+def wait_for_postgres():
+    for i in range(30):
+        try:
+            conn = psycopg2.connect(DATABASE_URL)
+            conn.close()
+            logger.info("✅ PostgreSQL conectado")
+            return True
+        except:
+            logger.info(f"⏳ Esperando PostgreSQL... ({i+1}/30)")
+            time.sleep(2)
+    return False
+
+# Cargar datos desde Excel
+def load_fresh_data():
     try:
+        excel_paths = ["/app/data/data.xlsx", "./data/data.xlsx"]
+        excel_file = next((path for path in excel_paths if os.path.exists(path)), None)
+
+        if not excel_file:
+            logger.error("❌ Excel no encontrado")
+            return False
+
+        conn = psycopg2.connect(DATABASE_URL)
+        cursor = conn.cursor()
+
+        cursor.execute("DROP TABLE IF EXISTS basf_import_data CASCADE")
+        conn.commit()
+        conn.close()
+
+        df = pd.read_excel(excel_file, sheet_name="CP_Colombia")
+        df = df.fillna("").replace([float("inf"), float("-inf")], "")
+
         engine = create_engine(DATABASE_URL)
-        chunksize = 250
-        total_inserted = 0
+        df.to_sql("basf_import_data", engine, if_exists="replace", index=False)
+        logger.info(f"✅ Datos cargados: {len(df)} registros")
 
-        for chunk in pd.read_excel(EXCEL_PATH, sheet_name=0, engine='openpyxl', chunksize=chunksize):
-            chunk.dropna(how="all", inplace=True)
-            chunk.replace([float('inf'), float('-inf')], pd.NA, inplace=True)
-            chunk.to_sql("basf_import_data", engine, if_exists="append", index=False)
-            total_inserted += len(chunk)
-            time.sleep(0.1)
-
-        return {"message": f"{total_inserted} filas insertadas correctamente en la tabla 'basf_import_data'"}
-
+        return True
     except Exception as e:
-        return JSONResponse(status_code=500, content={"error": str(e)})
+        logger.error(f"❌ Error cargando datos: {e}")
+        return False
 
-# Endpoint de análisis por producto
-@app.get("/analisis_flete")
-async def analizar_flete(
-    productos: List[str] = Query(..., description="Lista de productos en la columna 'PRODUCTO'")
-):
+# Evento de inicio
+@app.on_event("startup")
+async def startup():
+    logger.info("🚀 Iniciando BASF API...")
+    if not wait_for_postgres():
+        logger.error("❌ No se pudo conectar a PostgreSQL")
+    elif load_fresh_data():
+        logger.info("🎉 Datos frescos cargados")
+    else:
+        logger.warning("⚠️ API iniciada sin datos nuevos")
+
+# Endpoint raíz (health check)
+@app.get("/")
+async def root():
+    return {
+        "service": "BASF Data API",
+        "version": "1.0.0",
+        "endpoints": ["/", "/check", "/data", "/refresh"]
+    }
+
+# Endpoint para ver cantidad de registros
+@app.get("/check")
+async def check():
     try:
         conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
         cursor = conn.cursor()
-        resultados = {}
-
-        for producto in productos:
-            # Flete promedio por país
-            cursor.execute("""
-                SELECT "PAIS ORIGEN" AS pais_origen,
-                       ROUND(AVG(CAST("FLETE" AS FLOAT)), 2) AS flete_promedio_usd,
-                       COUNT(*) AS num_importaciones
-                FROM basf_import_data
-                WHERE LOWER("PRODUCTO") = LOWER(%s)
-                  AND "FLETE" IS NOT NULL
-                GROUP BY "PAIS ORIGEN"
-                ORDER BY flete_promedio_usd ASC
-            """, (producto,))
-            flete_origen = cursor.fetchall()
-
-            # Mejor proveedor (menor flete total)
-            cursor.execute("""
-                SELECT "PROVEEDOR", "PAIS ORIGEN",
-                       MIN(CAST("FLETE" AS FLOAT)) AS mejor_flete_usd
-                FROM basf_import_data
-                WHERE LOWER("PRODUCTO") = LOWER(%s)
-                  AND "FLETE" IS NOT NULL
-                GROUP BY "PROVEEDOR", "PAIS ORIGEN"
-                ORDER BY mejor_flete_usd ASC
-                LIMIT 1
-            """, (producto,))
-            mejor_proveedor = cursor.fetchone()
-
-            # Precio por kg por país
-            cursor.execute("""
-                SELECT "PAIS ORIGEN" AS pais_origen,
-                       ROUND(AVG(CAST("CIF (US$)" AS FLOAT) / NULLIF("CANTIDAD TOTAL", 0)), 4) AS precio_cif_kg_usd,
-                       ROUND(AVG(CAST("VALOR FOB (US$) TOTAL" AS FLOAT) / NULLIF("CANTIDAD TOTAL", 0)), 4) AS precio_fob_kg_usd,
-                       ROUND(AVG(CAST("SEGURO" AS FLOAT) / NULLIF("CANTIDAD TOTAL", 0)), 6) AS seguro_kg_usd
-                FROM basf_import_data
-                WHERE LOWER("PRODUCTO") = LOWER(%s)
-                  AND "CANTIDAD TOTAL" > 0
-                GROUP BY "PAIS ORIGEN"
-                ORDER BY precio_cif_kg_usd ASC
-            """, (producto,))
-            precios_por_kg = cursor.fetchall()
-
-            # Métricas por año
-            cursor.execute("""
-                SELECT EXTRACT(YEAR FROM TO_DATE("FECHA AAAA-MM-DD", 'YYYY-MM-DD'))::INT AS anio,
-                       ROUND(AVG(CAST("FLETE" AS FLOAT) / NULLIF("CANTIDAD TOTAL", 0)), 6) AS flete_kg_usd,
-                       ROUND(AVG(CAST("CIF (US$)" AS FLOAT) / NULLIF("CANTIDAD TOTAL", 0)), 6) AS cif_kg_usd,
-                       ROUND(AVG(CAST("VALOR FOB (US$) TOTAL" AS FLOAT) / NULLIF("CANTIDAD TOTAL", 0)), 6) AS fob_kg_usd
-                FROM basf_import_data
-                WHERE LOWER("PRODUCTO") = LOWER(%s)
-                  AND "CANTIDAD TOTAL" > 0
-                GROUP BY anio
-                ORDER BY anio ASC
-            """, (producto,))
-            resumen_anual = cursor.fetchall()
-
-            resultados[producto] = {
-                "costo_flete_por_origen": flete_origen,
-                "mejor_proveedor": mejor_proveedor,
-                "precio_por_kg_por_origen": precios_por_kg,
-                "resumen_anual": resumen_anual
-            }
-
+        cursor.execute("SELECT COUNT(*) AS count FROM basf_import_data")
+        result = cursor.fetchone()
         conn.close()
-        return resultados
-
+        return {
+            "status": "ok",
+            "records": result["count"]
+        }
     except Exception as e:
-        return JSONResponse(status_code=500, content={"error": str(e)})
+        return {"status": "error", "error": str(e)}
+
+# Endpoint para obtener los datos
+@app.get("/data")
+async def get_data():
+    try:
+        conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM basf_import_data LIMIT 1000")
+        records = cursor.fetchall()
+        conn.close()
+        return {"data": [dict(record) for record in records]}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Endpoint para recargar los datos manualmente
+@app.get("/refresh")
+async def refresh_data():
+    logger.info("🔄 Recarga manual solicitada...")
+    if load_fresh_data():
+        return {"status": "success", "message": "Datos recargados exitosamente"}
+    else:
+        raise HTTPException(status_code=500, detail="Error al recargar datos")
