@@ -370,15 +370,53 @@
 # -----------------------------------------
 
 from fastapi import FastAPI, Query
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from typing import List
+import pandas as pd
+from sqlalchemy import create_engine
 import psycopg2
 from psycopg2.extras import RealDictCursor
+import os
+import time
 
+# Configuración general
 app = FastAPI()
 
-DATABASE_URL = "postgresql://user:password@host:port/db"
+# Reemplaza con tus variables reales o usa dotenv/env
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://user:password@host:port/db")
+EXCEL_PATH = "/path/to/your/excel_file.xlsx"  # Cambia a la ruta real del archivo
 
+# CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Endpoint para cargar el Excel a PostgreSQL
+@app.get("/refresh")
+async def refresh_database():
+    try:
+        engine = create_engine(DATABASE_URL)
+        chunksize = 250
+        total_inserted = 0
+
+        for chunk in pd.read_excel(EXCEL_PATH, sheet_name=0, engine='openpyxl', chunksize=chunksize):
+            chunk.dropna(how="all", inplace=True)
+            chunk.replace([float('inf'), float('-inf')], pd.NA, inplace=True)
+            chunk.to_sql("basf_import_data", engine, if_exists="append", index=False)
+            total_inserted += len(chunk)
+            time.sleep(0.1)
+
+        return {"message": f"{total_inserted} filas insertadas correctamente en la tabla 'basf_import_data'"}
+
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+# Endpoint de análisis por producto
 @app.get("/analisis_flete")
 async def analizar_flete(
     productos: List[str] = Query(..., description="Lista de productos en la columna 'PRODUCTO'")
