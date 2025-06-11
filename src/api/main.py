@@ -333,9 +333,10 @@ async def get_data():
         logger.info(f"📊 Datos servidos: {len(records)} registros")
 
         return {
-            "total": len(records),
-            "source": "basf_optimized_data",
-            "data": [dict(record) for record in records]
+            # "total": len(records),
+            # "source": "basf_optimized_data",
+            # "data": [dict(record) for record in records]
+            dict(record) for record in records
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
