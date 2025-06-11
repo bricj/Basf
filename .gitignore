@@ -4,4 +4,4 @@ __pycache__/
 venv/
 .DS_Store
 *.log
-src/api/data/data.xlsx
+#src/api/data/data.xlsx
