@@ -1,0 +1,7 @@
+version: 2
+authtoken: 2vQ6NfG3h5nwdJ7NDD7ZUfO593a_27xuQKhoh7gnHm2n141GG
+tunnels:
+  trusted-api:
+    proto: http
+    addr: 8000
+    inspect: false  # 🔥 Esto evita la advertencia

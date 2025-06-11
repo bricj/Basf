@@ -143,7 +143,7 @@ async def check():
     except Exception as e:
         return {"status": "error", "error": str(e)}
 
-@app.get("/data")
+@app.get("/Data")
 async def get_data():
     """Obtener datos frescos para Copilot Studio"""
     try:
