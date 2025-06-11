@@ -1,0 +1,128 @@
+swagger: '2.0'
+info:
+  title: Data API
+  description: API para obtener datos de importación
+  version: '1.0'
+host: basf-1.onrender.com
+basePath: /
+schemes:
+  - https
+consumes: []
+produces:
+  - application/json
+paths:
+  /Data:
+    get:
+      summary: ConexionDatabase
+      operationId: ConexionDatabase
+      parameters:
+        - name: pais_origen
+          in: query
+          required: false
+          type: string
+          description: Filtrar por país de origen
+        - name: producto
+          in: query
+          required: false
+          type: string
+          description: Filtrar por producto
+        - name: fecha
+          in: query
+          required: false
+          type: string
+          format: date
+          description: Filtrar por fecha (YYYY-MM-DD)
+      responses:
+        '200':
+          description: Respuesta exitosa
+          schema:
+            type: array
+            items:
+              type: object
+              properties:
+                no_declaracion:
+                  type: integer
+                fecha:
+                  type: string
+                documento_identificacion:
+                  type: integer
+                importador:
+                  type: string
+                representante_legal_importador:
+                  type: string
+                proveedor:
+                  type: string
+                pais_origen:
+                  type: string
+                continente_origen:
+                  type: string
+                pais_compra:
+                  type: string
+                pais_procedencia:
+                  type: string
+                arancelario:
+                  type: integer
+                descripcion_arancel:
+                  type: string
+                gravamen:
+                  type: integer
+                codigo_arancelario:
+                  type: integer
+                desc_codigo_armonizado_ingles:
+                  type: string
+                descripcion_comercial_producto:
+                  type: string
+                cantidad_total:
+                  type: integer
+                unidad_comercial:
+                  type: string
+                valor_fob_total:
+                  type: number
+                cif:
+                  type: number
+                peso_neto_total:
+                  type: integer
+                peso_bruto_total:
+                  type: integer
+                total_bultos:
+                  type: integer
+                via:
+                  type: string
+                aduana:
+                  type: string
+                ciudad_ingreso:
+                  type: string
+                empresa_transporte:
+                  type: string
+                flete:
+                  type: number
+                seguro:
+                  type: number
+                od:
+                  type: string
+                sbu:
+                  type: string
+                producto:
+                  type: string
+                clasificacion:
+                  type: string
+                cod:
+                  type: string
+                mercado_relevante:
+                  type: string
+                chem_pais:
+                  type: string
+                proveedor_actual:
+                  type: string
+                clasificacion_proveedor:
+                  type: string
+                grupo_importador:
+                  type: string
+                clasificacion_importador:
+                  type: string
+definitions: {}
+parameters: {}
+responses: {}
+securityDefinitions: {}
+security: []
+tags: []
