@@ -29,20 +29,27 @@
 # CMD ["python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
 
 # Imagen base oficial de Python
+# Usa una imagen base ligera de Python
 FROM python:3.11-slim
 
-# Establecer el directorio de trabajo
+# Establece el directorio de trabajo en el contenedor
 WORKDIR /app
 
-# Copiar archivos
+# Copia los archivos de dependencias
 COPY requirements.txt .
+
+# Instala las dependencias de Python
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copiar el resto del código
+# Copia todo el contenido del proyecto al contenedor
 COPY . .
 
-# Puerto para Render
+# Copia explícitamente la carpeta con el Excel para asegurar su disponibilidad
+COPY src/api/data /app/data
+
+# Expone el puerto 8000 (usado por Uvicorn)
 EXPOSE 8000
 
-# Comando para iniciar FastAPI con Uvicorn
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Comando para ejecutar la aplicación con Uvicorn apuntando al módulo correcto
+CMD ["uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+
