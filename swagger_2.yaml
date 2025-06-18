@@ -1,20 +1,341 @@
+# swagger: '2.0'
+# info:
+#   title: Data API
+#   description: API para obtener datos de importación
+#   version: '1.0'
+# host: basf-1.onrender.com
+# basePath: /
+# schemes:
+#   - https
+# consumes: []
+# produces:
+#   - application/json
+# paths:
+#   /Data:
+#     get:
+#       summary: ConexionDatabase
+#       operationId: ConexionDatabase
+#       parameters:
+#         - name: pais_origen
+#           in: query
+#           required: false
+#           type: string
+#           description: Filtrar por país de origen
+#         - name: producto
+#           in: query
+#           required: false
+#           type: string
+#           description: Filtrar por producto
+#         - name: fecha
+#           in: query
+#           required: false
+#           type: string
+#           format: date
+#           description: Filtrar por fecha (YYYY-MM-DD)
+#       responses:
+#         '200':
+#           description: Respuesta exitosa
+#           schema:
+#             type: array
+#             items:
+#               type: object
+#               properties:
+#                 no_declaracion:
+#                   type: integer
+#                 fecha:
+#                   type: string
+#                 documento_identificacion:
+#                   type: integer
+#                 importador:
+#                   type: string
+#                 representante_legal_importador:
+#                   type: string
+#                 proveedor:
+#                   type: string
+#                 pais_origen:
+#                   type: string
+#                 continente_origen:
+#                   type: string
+#                 pais_compra:
+#                   type: string
+#                 pais_procedencia:
+#                   type: string
+#                 arancelario:
+#                   type: integer
+#                 descripcion_arancel:
+#                   type: string
+#                 gravamen:
+#                   type: integer
+#                 codigo_arancelario:
+#                   type: integer
+#                 desc_codigo_armonizado_ingles:
+#                   type: string
+#                 descripcion_comercial_producto:
+#                   type: string
+#                 cantidad_total:
+#                   type: integer
+#                 unidad_comercial:
+#                   type: string
+#                 valor_fob_total:
+#                   type: number
+#                 cif:
+#                   type: number
+#                 peso_neto_total:
+#                   type: integer
+#                 peso_bruto_total:
+#                   type: integer
+#                 total_bultos:
+#                   type: integer
+#                 via:
+#                   type: string
+#                 aduana:
+#                   type: string
+#                 ciudad_ingreso:
+#                   type: string
+#                 empresa_transporte:
+#                   type: string
+#                 flete:
+#                   type: number
+#                 seguro:
+#                   type: number
+#                 od:
+#                   type: string
+#                 sbu:
+#                   type: string
+#                 producto:
+#                   type: string
+#                 clasificacion:
+#                   type: string
+#                 cod:
+#                   type: string
+#                 mercado_relevante:
+#                   type: string
+#                 chem_pais:
+#                   type: string
+#                 proveedor_actual:
+#                   type: string
+#                 clasificacion_proveedor:
+#                   type: string
+#                 grupo_importador:
+#                   type: string
+#                 clasificacion_importador:
+#                   type: string
+# definitions: {}
+# parameters: {}
+# responses: {}
+# securityDefinitions: {}
+# security: []
+# tags: []
+
+################### Version 3 ###############################
+
 swagger: '2.0'
 info:
-  title: Data API
-  description: API para obtener datos de importación
-  version: '1.0'
+  title: BASF AI-SQL Analytics API
+  description: |
+    API para análisis dinámico de datos de importación BASF con capacidades de IA.
+    
+    **Nuevas capacidades v4.0:**
+    - Ejecución SQL segura generada por IA
+    - Análisis de 40+ columnas de datos de importación
+    - Validación y sanitización automática de queries
+    - Optimizado para Microsoft Copilot Studio
+    
+    **Endpoints principales:**
+    - `/esquema-bd` - Metadata completa para IA
+    - `/ejecutar-sql` - Ejecutar SQL dinámico generado por IA
+    - `/validar-sql` - Validar consultas antes de ejecutar
+  version: '4.0'
 host: basf-1.onrender.com
 basePath: /
 schemes:
   - https
-consumes: []
+consumes:
+  - application/json
 produces:
   - application/json
+
 paths:
+  /:
+    get:
+      summary: Información general de la API
+      operationId: apiInfo
+      responses:
+        '200':
+          description: Información básica de la API
+          schema:
+            type: object
+            properties:
+              service:
+                type: string
+              version:
+                type: string
+              descripcion:
+                type: string
+              capacidades:
+                type: array
+                items:
+                  type: string
+
+  /check:
+    get:
+      summary: Health check de la API
+      operationId: healthCheck
+      responses:
+        '200':
+          description: Estado de la API y conexión a BD
+          schema:
+            type: object
+            properties:
+              status:
+                type: string
+                enum: [ok, timeout, error]
+              total_registros:
+                type: integer
+
+  /esquema-bd:
+    get:
+      summary: Obtener esquema completo de la base de datos
+      operationId: obtenerEsquema
+      description: |
+        Proporciona metadata completa para que la IA de Copilot genere SQL correcto.
+        Incluye estructura de tablas, columnas, tipos de datos y ejemplos de valores.
+      responses:
+        '200':
+          description: Esquema completo de la base de datos
+          schema:
+            type: object
+            properties:
+              tablas:
+                type: array
+                items:
+                  type: object
+              columnas:
+                type: array
+                items:
+                  type: object
+              ejemplos_valores:
+                type: array
+                items:
+                  type: object
+              esquema_sugerido:
+                type: string
+                description: Esquema formateado para IA con ejemplos SQL
+
+  /ejecutar-sql:
+    post:
+      summary: Ejecutar SQL generado por IA de Copilot
+      operationId: ejecutarSQL
+      description: |
+        Ejecuta consultas SQL generadas por la IA de Microsoft Copilot Studio.
+        Incluye validación de seguridad y optimización automática.
+      parameters:
+        - name: body
+          in: body
+          required: true
+          schema:
+            type: object
+            required:
+              - instruccion_sql
+            properties:
+              instruccion_sql:
+                type: string
+                description: Consulta SQL generada por IA
+                example: 'SELECT "PRODUCTO", AVG("FLETE"::numeric) FROM basf_import_data GROUP BY "PRODUCTO" LIMIT 20'
+              parametros:
+                type: object
+                description: Parámetros adicionales para la consulta
+              contexto:
+                type: string
+                description: Contexto de la pregunta original del usuario
+                example: "Pregunta: ¿Cuál es el flete promedio por producto?"
+      responses:
+        '200':
+          description: Resultado de la consulta SQL
+          schema:
+            type: object
+            properties:
+              status:
+                type: string
+                enum: [exitoso, sql_invalido, timeout, sin_resultados, error_ejecucion]
+              mensaje:
+                type: string
+              contexto:
+                type: string
+              resumen:
+                type: object
+                description: Resumen inteligente de los resultados
+              datos:
+                type: array
+                items:
+                  type: object
+                description: Resultados de la consulta
+              total_registros:
+                type: integer
+              sql_ejecutado:
+                type: string
+                description: SQL sanitizado que se ejecutó
+              metadata:
+                type: object
+                properties:
+                  columnas:
+                    type: array
+                    items:
+                      type: string
+                  tipos_datos:
+                    type: object
+
+  /validar-sql:
+    get:
+      summary: Validar SQL sin ejecutar
+      operationId: validarSQL
+      description: Útil para debugging y validación previa de consultas SQL
+      parameters:
+        - name: sql
+          in: query
+          required: true
+          type: string
+          description: SQL a validar
+        - name: mostrar_explicacion
+          in: query
+          type: boolean
+          default: false
+          description: Incluir explicación detallada de la validación
+      responses:
+        '200':
+          description: Resultado de la validación
+          schema:
+            type: object
+            properties:
+              sql_original:
+                type: string
+              es_valido:
+                type: boolean
+              mensaje_validacion:
+                type: string
+              sql_sanitizado:
+                type: string
+
+  /test-conexion:
+    get:
+      summary: Test rápido de conectividad
+      operationId: testConexion
+      responses:
+        '200':
+          description: Test de conectividad básica
+          schema:
+            type: object
+            properties:
+              status:
+                type: string
+              conexion:
+                type: string
+
   /Data:
     get:
-      summary: ConexionDatabase
+      summary: ConexionDatabase (Endpoint legacy - mantener compatibilidad)
       operationId: ConexionDatabase
+      description: Endpoint original mantenido para compatibilidad con integraciones existentes
       parameters:
         - name: pais_origen
           in: query
@@ -120,9 +441,28 @@ paths:
                   type: string
                 clasificacion_importador:
                   type: string
-definitions: {}
+
+definitions:
+  ErrorResponse:
+    type: object
+    properties:
+      status:
+        type: string
+      error:
+        type: string
+      mensaje:
+        type: string
+
 parameters: {}
 responses: {}
 securityDefinitions: {}
 security: []
-tags: []
+tags:
+  - name: "IA & SQL"
+    description: "Endpoints para generación y ejecución de SQL dinámico"
+  - name: "Schema"
+    description: "Información de estructura de datos"
+  - name: "Health"
+    description: "Estado y monitoreo"
+  - name: "Legacy"
+    description: "Endpoints originales para compatibilidad"
