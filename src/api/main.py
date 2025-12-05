@@ -1070,13 +1070,16 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
-import sqlite3
-import pandas as pd
+import psycopg2
+from psycopg2.extras import RealDictCursor
 import asyncio
 import logging
 import re
 import json
+import os
 from datetime import datetime
+import pandas as pd
+from sqlalchemy import create_engine
 
 # Configuración
 logging.basicConfig(level=logging.INFO)
@@ -1092,10 +1095,78 @@ app.add_middleware(
     allow_credentials=True,
 )
 
-# Cargar datos en SQLite
-conn = sqlite3.connect(":memory:", check_same_thread=False)
-df = pd.read_csv("data.csv", sep=';')
-df.to_sql("energy_data", conn, index=False, if_exists="replace")
+# Configuración de base de datos
+DATABASE_URL = os.getenv("DATABASE_URL")
+CSV_FILE = "data.csv"
+
+if not DATABASE_URL:
+    logger.error("❌ DATABASE_URL no configurado")
+    raise RuntimeError("DATABASE_URL es requerido")
+
+# Función de migración automática al inicio
+def auto_migrate():
+    """Crea y carga la tabla si no existe (ejecuta solo al inicio)"""
+    try:
+        # Verificar si la tabla ya existe
+        conn = psycopg2.connect(DATABASE_URL)
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT EXISTS (
+                SELECT FROM information_schema.tables 
+                WHERE table_name = 'energy_data'
+            );
+        """)
+        table_exists = cursor.fetchone()[0]
+        cursor.close()
+        conn.close()
+        
+        if table_exists:
+            logger.info("✅ Tabla 'energy_data' ya existe. Saltando migración.")
+            return True
+        
+        logger.info("⚠️  Tabla 'energy_data' no existe. Iniciando migración automática...")
+        
+        # Verificar si existe el CSV
+        if not os.path.exists(CSV_FILE):
+            logger.error(f"❌ Archivo {CSV_FILE} no encontrado para migración inicial")
+            logger.error(f"   Coloca {CSV_FILE} en el directorio o ejecuta migrate.py manualmente")
+            return False
+        
+        # Leer CSV
+        logger.info(f"📖 Leyendo {CSV_FILE}...")
+        df = pd.read_csv(CSV_FILE, sep=';')
+        logger.info(f"📊 {len(df)} registros leídos")
+        
+        # Limpiar datos
+        df = df.fillna("")
+        df = df.replace([float('inf'), float('-inf')], "")
+        
+        # Migrar usando SQLAlchemy
+        logger.info("📤 Migrando datos a PostgreSQL...")
+        engine = create_engine(DATABASE_URL)
+        df.to_sql("energy_data", engine, if_exists="replace", index=False)
+        
+        # Verificar
+        conn = psycopg2.connect(DATABASE_URL)
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM energy_data")
+        count = cursor.fetchone()[0]
+        cursor.close()
+        conn.close()
+        
+        logger.info(f"✅ Migración completada: {count} registros cargados")
+        return True
+        
+    except Exception as e:
+        logger.error(f"❌ Error en migración automática: {e}")
+        return False
+
+# Ejecutar migración automática al iniciar
+logger.info("🚀 Iniciando Energy Data API...")
+if auto_migrate():
+    logger.info("✅ Base de datos lista")
+else:
+    logger.warning("⚠️  API iniciará sin datos. Ejecuta migrate.py manualmente si es necesario.")
 
 # Modelos para la comunicación
 class SQLRequest(BaseModel):
@@ -1196,11 +1267,13 @@ async def execute_sql_safe(sql: str, timeout: int = 25):
     """Ejecuta SQL validado con timeout"""
     try:
         def run_query():
-            cursor = conn.cursor()
-            cursor.execute(sql)
-            columns = [desc[0] for desc in cursor.description]
-            rows = cursor.fetchall()
-            return [dict(zip(columns, row)) for row in rows]
+            conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+            try:
+                cursor = conn.cursor()
+                cursor.execute(sql)
+                return cursor.fetchall()
+            finally:
+                conn.close()
         
         loop = asyncio.get_event_loop()
         result = await asyncio.wait_for(
@@ -1238,37 +1311,46 @@ async def root():
 async def obtener_esquema_bd():
     """Proporciona toda la metadata necesaria para generar SQL correcto"""
     try:
-        # Obtener información de columnas desde SQLite
-        cursor = conn.cursor()
-        cursor.execute("PRAGMA table_info(energy_data)")
-        columns_raw = cursor.fetchall()
+        # Obtener información de columnas
+        query_columnas = """
+        SELECT 
+            column_name,
+            data_type,
+            is_nullable,
+            column_default
+        FROM information_schema.columns 
+        WHERE table_name = 'energy_data'
+        ORDER BY ordinal_position
+        """
         
-        columnas_info = []
-        for col in columns_raw:
-            columnas_info.append({
-                "column_name": col[1],
-                "data_type": col[2],
-                "is_nullable": "YES" if col[3] == 0 else "NO",
-                "column_default": col[4]
-            })
+        columnas_info = await execute_sql_safe(query_columnas, timeout=10)
         
         # Obtener ejemplos de valores únicos
-        ejemplos_info = []
+        query_ejemplos = """
+        SELECT 
+            'country' as columna,
+            ARRAY_AGG(DISTINCT country ORDER BY country LIMIT 20) as valores_ejemplo
+        FROM energy_data 
+        WHERE country IS NOT NULL AND country != ''
         
-        # Ejemplo para country
-        cursor.execute("SELECT DISTINCT country FROM energy_data WHERE country IS NOT NULL ORDER BY country LIMIT 20")
-        countries = [row[0] for row in cursor.fetchall()]
-        ejemplos_info.append({"columna": "country", "valores_ejemplo": countries})
+        UNION ALL
         
-        # Ejemplo para year
-        cursor.execute("SELECT DISTINCT year FROM energy_data WHERE year IS NOT NULL ORDER BY year")
-        years = [row[0] for row in cursor.fetchall()]
-        ejemplos_info.append({"columna": "year", "valores_ejemplo": years})
+        SELECT 
+            'year' as columna,
+            ARRAY_AGG(DISTINCT year ORDER BY year) as valores_ejemplo
+        FROM energy_data 
+        WHERE year IS NOT NULL
         
-        # Ejemplo para iso_code
-        cursor.execute("SELECT DISTINCT iso_code FROM energy_data WHERE iso_code IS NOT NULL ORDER BY iso_code LIMIT 20")
-        iso_codes = [row[0] for row in cursor.fetchall()]
-        ejemplos_info.append({"columna": "iso_code", "valores_ejemplo": iso_codes})
+        UNION ALL
+        
+        SELECT 
+            'iso_code' as columna,
+            ARRAY_AGG(DISTINCT iso_code ORDER BY iso_code LIMIT 20) as valores_ejemplo
+        FROM energy_data 
+        WHERE iso_code IS NOT NULL AND iso_code != ''
+        """
+        
+        ejemplos_info = await execute_sql_safe(query_ejemplos, timeout=15)
         
         # Generar esquema sugerido
         esquema_sugerido = """
@@ -1377,8 +1459,8 @@ async def obtener_esquema_bd():
         
         return MetadataResponse(
             tablas=[{"nombre": "energy_data", "descripcion": "Datos históricos de energía por país"}],
-            columnas=columnas_info,
-            ejemplos_valores=ejemplos_info,
+            columnas=[dict(col) for col in columnas_info] if columnas_info else [],
+            ejemplos_valores=[dict(ej) for ej in ejemplos_info] if ejemplos_info else [],
             esquema_sugerido=esquema_sugerido
         )
         
