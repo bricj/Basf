@@ -375,7 +375,7 @@ class SQLSafeExecutor:
 # Instancia del ejecutor
 sql_executor = SQLSafeExecutor()
 
-async def execute_sql_safe(sql: str, timeout: int = 25):
+async def execute_sql_safe(sql: str, timeout: int = 25000):
     """Ejecuta SQL validado con timeout"""
     try:
         def run_query():
@@ -394,7 +394,7 @@ async def execute_sql_safe(sql: str, timeout: int = 25):
         )
         return result
     except asyncio.TimeoutError:
-        logger.error(f"SQL timeout: {sql[:100]}...")
+        logger.error(f"SQL timeout: {sql[:10000]}...")
         return None
     except Exception as e:
         logger.error(f"SQL error: {e}")
