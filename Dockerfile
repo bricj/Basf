@@ -81,7 +81,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # Copia explícitamente la carpeta con el Excel para asegurar su disponibilidad
-COPY src/api/data /app/data
+#COPY src/api/data /app/data
 
 # Expone el puerto 8000 (usado por Uvicorn)
 EXPOSE 8000
