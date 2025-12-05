@@ -515,7 +515,7 @@ async def obtener_esquema_bd():
         WHERE "greenhouse_gas_emissions" IS NOT NULL
         """
         
-        ejemplos_info = await execute_sql_safe(query_ejemplos, timeout=15)
+        ejemplos_info = await execute_sql_safe(query_ejemplos, timeout=15000)
         
         # Generar esquema sugerido para Copilot
         esquema_sugerido = """
@@ -925,7 +925,7 @@ async def ejecutar_sql_desde_ia(request: SQLRequest):
         sql_sanitizado = sql_executor.sanitizar_sql(sql_original)
         
         # 3. Ejecutar
-        resultados = await execute_sql_safe(sql_sanitizado, timeout=22)
+        resultados = await execute_sql_safe(sql_sanitizado, timeout=22000)
         
         if resultados is None:
             return {
