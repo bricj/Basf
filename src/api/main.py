@@ -1100,8 +1100,26 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 CSV_FILE = "data.csv"
 
 if not DATABASE_URL:
+    logger.error("=" * 60)
     logger.error("❌ DATABASE_URL no configurado")
-    raise RuntimeError("DATABASE_URL es requerido")
+    logger.error("=" * 60)
+    logger.error("")
+    logger.error("📝 SOLUCIÓN:")
+    logger.error("")
+    logger.error("En Render:")
+    logger.error("  1. Ve a tu Web Service")
+    logger.error("  2. Environment → Add Environment Variable")
+    logger.error("  3. Key: DATABASE_URL")
+    logger.error("  4. Value: [Internal Database URL de tu PostgreSQL]")
+    logger.error("")
+    logger.error("Local:")
+    logger.error("  export DATABASE_URL='postgresql://user:pass@host:5432/db'")
+    logger.error("")
+    logger.error("=" * 60)
+    raise RuntimeError(
+        "DATABASE_URL es requerido. "
+        "Configúralo en Environment Variables de Render o como variable de entorno local."
+    )
 
 # Función de migración automática al inicio
 def auto_migrate():
