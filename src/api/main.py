@@ -1098,7 +1098,7 @@ class SQLRequest(BaseModel):
     query: str
     context: Optional[str] = ""
 
-class SQLSafeExecutor:
+class SQLSafeExecutor: #
     def __init__(self):
         self.forbidden_words = {
             'drop', 'delete', 'insert', 'update', 'create', 'alter',
