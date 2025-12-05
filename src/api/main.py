@@ -1091,7 +1091,7 @@ app.add_middleware(
 )
 
 conn = sqlite3.connect(":memory:", check_same_thread=False)
-df = pd.read_csv("data.csv", sep=';')
+df = pd.read_csv("data.csv", sep=',')
 df.to_sql("energy_data", conn, index=False, if_exists="replace")
 
 class SQLRequest(BaseModel):
