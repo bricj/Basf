@@ -1070,8 +1070,8 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
-import psycopg2
-from psycopg2.extras import RealDictCursor
+import sqlite3
+import pandas as pd
 import asyncio
 import logging
 import re
@@ -1092,8 +1092,10 @@ app.add_middleware(
     allow_credentials=True,
 )
 
-DATABASE_URL = "postgresql://basf:F8utfvZuhQnp1cHvbOZlgqLOKHhVDkby@dpg-d14ht7muk2gs73at72a0-a.oregon-postgres.render.com/basf_db"
-
+# Cargar datos en SQLite
+conn = sqlite3.connect(":memory:", check_same_thread=False)
+df = pd.read_csv("data.csv", sep=';')
+df.to_sql("energy_data", conn, index=False, if_exists="replace")
 
 # Modelos para la comunicación
 class SQLRequest(BaseModel):
@@ -1185,14 +1187,6 @@ class SQLSafeExecutor:
         if 'limit' not in sql.lower():
             sql += ' LIMIT 100'
         
-        # Asegurar casting numérico para operaciones
-        sql = re.sub(r'\bpopulation\b(?!\s*::)', 'population::numeric', sql)
-        sql = re.sub(r'\bgdp\b(?!\s*::)', 'gdp::numeric', sql)
-        sql = re.sub(r'\bcoal_consumption\b(?!\s*::)', 'coal_consumption::numeric', sql)
-        sql = re.sub(r'\bcoal_production\b(?!\s*::)', 'coal_production::numeric', sql)
-        sql = re.sub(r'\benergy_per_capita\b(?!\s*::)', 'energy_per_capita::numeric', sql)
-        sql = re.sub(r'\belectricity_generation\b(?!\s*::)', 'electricity_generation::numeric', sql)
-        
         return sql.strip()
 
 # Instancia del ejecutor
@@ -1202,13 +1196,11 @@ async def execute_sql_safe(sql: str, timeout: int = 25):
     """Ejecuta SQL validado con timeout"""
     try:
         def run_query():
-            conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
-            try:
-                cursor = conn.cursor()
-                cursor.execute(sql)
-                return cursor.fetchall()
-            finally:
-                conn.close()
+            cursor = conn.cursor()
+            cursor.execute(sql)
+            columns = [desc[0] for desc in cursor.description]
+            rows = cursor.fetchall()
+            return [dict(zip(columns, row)) for row in rows]
         
         loop = asyncio.get_event_loop()
         result = await asyncio.wait_for(
@@ -1246,46 +1238,37 @@ async def root():
 async def obtener_esquema_bd():
     """Proporciona toda la metadata necesaria para generar SQL correcto"""
     try:
-        # Obtener información de columnas
-        query_columnas = """
-        SELECT 
-            column_name,
-            data_type,
-            is_nullable,
-            column_default
-        FROM information_schema.columns 
-        WHERE table_name = 'energy_data'
-        ORDER BY ordinal_position
-        """
+        # Obtener información de columnas desde SQLite
+        cursor = conn.cursor()
+        cursor.execute("PRAGMA table_info(energy_data)")
+        columns_raw = cursor.fetchall()
         
-        columnas_info = await execute_sql_safe(query_columnas, timeout=10)
+        columnas_info = []
+        for col in columns_raw:
+            columnas_info.append({
+                "column_name": col[1],
+                "data_type": col[2],
+                "is_nullable": "YES" if col[3] == 0 else "NO",
+                "column_default": col[4]
+            })
         
-        # Obtener ejemplos de valores únicos para cada columna clave
-        query_ejemplos = """
-        SELECT 
-            'country' as columna,
-            ARRAY_AGG(DISTINCT country ORDER BY country LIMIT 20) as valores_ejemplo
-        FROM energy_data 
-        WHERE country IS NOT NULL AND country != ''
+        # Obtener ejemplos de valores únicos
+        ejemplos_info = []
         
-        UNION ALL
+        # Ejemplo para country
+        cursor.execute("SELECT DISTINCT country FROM energy_data WHERE country IS NOT NULL ORDER BY country LIMIT 20")
+        countries = [row[0] for row in cursor.fetchall()]
+        ejemplos_info.append({"columna": "country", "valores_ejemplo": countries})
         
-        SELECT 
-            'year' as columna,
-            ARRAY_AGG(DISTINCT year ORDER BY year) as valores_ejemplo
-        FROM energy_data 
-        WHERE year IS NOT NULL
+        # Ejemplo para year
+        cursor.execute("SELECT DISTINCT year FROM energy_data WHERE year IS NOT NULL ORDER BY year")
+        years = [row[0] for row in cursor.fetchall()]
+        ejemplos_info.append({"columna": "year", "valores_ejemplo": years})
         
-        UNION ALL
-        
-        SELECT 
-            'iso_code' as columna,
-            ARRAY_AGG(DISTINCT iso_code ORDER BY iso_code LIMIT 20) as valores_ejemplo
-        FROM energy_data 
-        WHERE iso_code IS NOT NULL AND iso_code != ''
-        """
-        
-        ejemplos_info = await execute_sql_safe(query_ejemplos, timeout=15)
+        # Ejemplo para iso_code
+        cursor.execute("SELECT DISTINCT iso_code FROM energy_data WHERE iso_code IS NOT NULL ORDER BY iso_code LIMIT 20")
+        iso_codes = [row[0] for row in cursor.fetchall()]
+        ejemplos_info.append({"columna": "iso_code", "valores_ejemplo": iso_codes})
         
         # Generar esquema sugerido
         esquema_sugerido = """
@@ -1327,27 +1310,27 @@ async def obtener_esquema_bd():
         - energy_cons_change_pct (numeric): Cambio porcentual en consumo de energía
         - energy_cons_change_twh (numeric): Cambio en consumo de energía (TWh)
         
-        EJEMPLOS DE CONSULTAS SQL COMPLEJAS:
+        EJEMPLOS DE CONSULTAS SQL:
         
         1. Top consumidores de carbón por año:
         SELECT 
             country,
             year,
-            coal_consumption::numeric,
-            coal_production::numeric,
-            (coal_consumption::numeric - coal_production::numeric) as balance
+            coal_consumption,
+            coal_production,
+            (coal_consumption - coal_production) as balance
         FROM energy_data 
         WHERE coal_consumption > 0
-        ORDER BY coal_consumption::numeric DESC 
+        ORDER BY coal_consumption DESC 
         LIMIT 20
         
         2. Evolución energética de un país:
         SELECT 
             year,
-            energy_per_capita::numeric,
-            coal_share_energy::numeric,
-            electricity_generation::numeric,
-            ROUND((energy_per_capita::numeric / NULLIF(gdp::numeric, 0)) * 1000000, 2) as energia_por_millon_gdp
+            energy_per_capita,
+            coal_share_energy,
+            electricity_generation,
+            ROUND((energy_per_capita / NULLIF(gdp, 0)) * 1000000, 2) as energia_por_millon_gdp
         FROM energy_data 
         WHERE country = 'Russia' AND year >= 1990
         ORDER BY year 
@@ -1356,9 +1339,9 @@ async def obtener_esquema_bd():
         3. Análisis comparativo de eficiencia energética:
         SELECT 
             country,
-            AVG(energy_per_capita::numeric) as promedio_energia_percapita,
-            AVG(energy_per_gdp::numeric) as promedio_energia_por_gdp,
-            AVG(coal_share_energy::numeric) as promedio_participacion_carbon
+            AVG(energy_per_capita) as promedio_energia_percapita,
+            AVG(energy_per_gdp) as promedio_energia_por_gdp,
+            AVG(coal_share_energy) as promedio_participacion_carbon
         FROM energy_data 
         WHERE year >= 2000 AND energy_per_capita > 0
         GROUP BY country
@@ -1368,9 +1351,9 @@ async def obtener_esquema_bd():
         4. Tendencia de transición energética:
         SELECT 
             year,
-            AVG(coal_share_elec::numeric) as participacion_carbon_electricidad,
+            AVG(coal_share_elec) as participacion_carbon_electricidad,
             COUNT(DISTINCT country) as num_paises,
-            SUM(coal_consumption::numeric) as consumo_total_carbon
+            SUM(coal_consumption) as consumo_total_carbon
         FROM energy_data 
         WHERE year >= 1985
         GROUP BY year
@@ -1379,7 +1362,7 @@ async def obtener_esquema_bd():
         
         REGLAS CRÍTICAS PARA GENERAR SQL:
         ✅ Siempre usar LIMIT (máximo 500 registros)
-        ✅ Usar casting ::numeric para columnas numéricas en cálculos
+        ✅ Usar CAST() o ROUND() para operaciones numéricas
         ✅ Filtrar valores NULL y cero cuando sea relevante
         ✅ Para porcentajes: (valor1/NULLIF(valor2,0)*100)
         ✅ Para texto usar UPPER() en comparaciones LIKE
@@ -1394,8 +1377,8 @@ async def obtener_esquema_bd():
         
         return MetadataResponse(
             tablas=[{"nombre": "energy_data", "descripcion": "Datos históricos de energía por país"}],
-            columnas=[dict(col) for col in columnas_info] if columnas_info else [],
-            ejemplos_valores=[dict(ej) for ej in ejemplos_info] if ejemplos_info else [],
+            columnas=columnas_info,
+            ejemplos_valores=ejemplos_info,
             esquema_sugerido=esquema_sugerido
         )
         
