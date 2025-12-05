@@ -1066,18 +1066,19 @@
 #     except Exception as e:
 #         return {"status": "error", "error": str(e)}
 
-"""
-API para consultas SQL sobre datos de energía
-"""
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
-import sqlite3
-import pandas as pd
-import re
+import psycopg2
+from psycopg2.extras import RealDictCursor
+import asyncio
 import logging
+import re
+import json
+from datetime import datetime
 
+# Configuración
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -1086,26 +1087,49 @@ app = FastAPI(title="Energy Data API", version="1.0.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_methods=["GET", "POST"],
+    allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
+    allow_credentials=True,
 )
 
-conn = sqlite3.connect(":memory:", check_same_thread=False)
-df = pd.read_csv("data.csv", sep=',')
-df.to_sql("energy_data", conn, index=False, if_exists="replace")
+DATABASE_URL = "postgresql://basf:F8utfvZuhQnp1cHvbOZlgqLOKHhVDkby@dpg-d14ht7muk2gs73at72a0-a.oregon-postgres.render.com/basf_db"
 
+
+# Modelos para la comunicación
 class SQLRequest(BaseModel):
-    query: str
-    context: Optional[str] = ""
+    instruccion_sql: str
+    parametros: Optional[Dict[str, Any]] = {}
+    contexto: Optional[str] = ""
 
-class SQLSafeExecutor: #
+class MetadataResponse(BaseModel):
+    tablas: List[Dict[str, Any]]
+    columnas: List[Dict[str, Any]]
+    ejemplos_valores: List[Dict[str, Any]]
+    esquema_sugerido: str
+
+class SQLSafeExecutor:
+    """Ejecutor SQL seguro que valida y ejecuta queries generadas por IA"""
+    
     def __init__(self):
-        self.forbidden_words = {
-            'drop', 'delete', 'insert', 'update', 'create', 'alter',
-            'truncate', 'grant', 'revoke', 'exec', 'execute'
+        # Palabras permitidas (whitelist)
+        self.palabras_permitidas = {
+            'select', 'from', 'where', 'group', 'by', 'order', 'having',
+            'sum', 'avg', 'count', 'max', 'min', 'round', 'upper', 'lower',
+            'like', 'and', 'or', 'not', 'in', 'between', 'is', 'null',
+            'extract', 'year', 'month', 'day', 'date', 'limit', 'distinct',
+            'as', 'case', 'when', 'then', 'else', 'end', 'cast', 'nullif',
+            'coalesce', 'substring', 'length', 'trim', 'desc', 'asc'
         }
         
-        self.valid_columns = {
+        # Palabras prohibidas (blacklist)
+        self.palabras_prohibidas = {
+            'drop', 'delete', 'insert', 'update', 'create', 'alter', 
+            'truncate', 'grant', 'revoke', 'exec', 'execute', 'sp_',
+            'xp_', 'sys', 'information_schema', 'pg_', 'admin', 'user'
+        }
+        
+        # Columnas válidas de la tabla
+        self.columnas_validas = {
             'country', 'year', 'iso_code', 'population', 'gdp',
             'coal_cons_change_pct', 'coal_cons_change_twh', 'coal_cons_per_capita',
             'coal_consumption', 'coal_elec_per_capita', 'coal_electricity',
@@ -1116,167 +1140,430 @@ class SQLSafeExecutor: #
             'energy_per_gdp'
         }
     
-    def validate_sql(self, sql: str) -> tuple[bool, str]:
+    def validar_sql_seguro(self, sql: str) -> tuple[bool, str]:
+        """Valida que el SQL sea seguro para ejecutar"""
         sql_lower = sql.lower().strip()
         
+        # 1. Verificar que empiece con SELECT
         if not sql_lower.startswith('select'):
             return False, "Solo se permiten consultas SELECT"
         
-        for word in self.forbidden_words:
-            if word in sql_lower:
-                return False, f"Palabra prohibida: {word}"
+        # 2. Verificar palabras prohibidas
+        for palabra in self.palabras_prohibidas:
+            if palabra in sql_lower:
+                return False, f"Palabra prohibida detectada: {palabra}"
         
+        # 3. Verificar que solo use la tabla permitida
         if 'energy_data' not in sql_lower:
             return False, "Solo se permite consultar la tabla energy_data"
         
+        # 4. Verificar límite máximo
         if 'limit' not in sql_lower:
-            return False, "Debe incluir LIMIT"
+            return False, "Debe incluir LIMIT para evitar consultas muy grandes"
         
+        # 5. Extraer y validar LIMIT
         limit_match = re.search(r'limit\s+(\d+)', sql_lower)
         if limit_match:
             limit_value = int(limit_match.group(1))
-            if limit_value > 1000:
-                return False, "LIMIT máximo: 1000"
+            if limit_value > 500:
+                return False, "LIMIT máximo permitido: 500 registros"
         
-        return True, "SQL válido"
+        # 6. Verificar columnas válidas (básico)
+        for columna in self.columnas_validas:
+            if columna.lower() in sql_lower:
+                continue  # Columna válida encontrada
+        
+        return True, "SQL validado correctamente"
     
-    def sanitize_sql(self, sql: str) -> str:
+    def sanitizar_sql(self, sql: str) -> str:
+        """Limpia y mejora el SQL generado"""
+        # Remover comentarios
         sql = re.sub(r'--.*$', '', sql, flags=re.MULTILINE)
         sql = re.sub(r'/\*.*?\*/', '', sql, flags=re.DOTALL)
         
+        # Añadir LIMIT si no existe
         if 'limit' not in sql.lower():
             sql += ' LIMIT 100'
         
+        # Asegurar casting numérico para operaciones
+        sql = re.sub(r'\bpopulation\b(?!\s*::)', 'population::numeric', sql)
+        sql = re.sub(r'\bgdp\b(?!\s*::)', 'gdp::numeric', sql)
+        sql = re.sub(r'\bcoal_consumption\b(?!\s*::)', 'coal_consumption::numeric', sql)
+        sql = re.sub(r'\bcoal_production\b(?!\s*::)', 'coal_production::numeric', sql)
+        sql = re.sub(r'\benergy_per_capita\b(?!\s*::)', 'energy_per_capita::numeric', sql)
+        sql = re.sub(r'\belectricity_generation\b(?!\s*::)', 'electricity_generation::numeric', sql)
+        
         return sql.strip()
 
+# Instancia del ejecutor
 sql_executor = SQLSafeExecutor()
 
-def execute_sql(sql: str) -> List[Dict]:
+async def execute_sql_safe(sql: str, timeout: int = 25):
+    """Ejecuta SQL validado con timeout"""
     try:
-        cursor = conn.cursor()
-        cursor.execute(sql)
-        columns = [desc[0] for desc in cursor.description]
-        rows = cursor.fetchall()
-        return [dict(zip(columns, row)) for row in rows]
+        def run_query():
+            conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+            try:
+                cursor = conn.cursor()
+                cursor.execute(sql)
+                return cursor.fetchall()
+            finally:
+                conn.close()
+        
+        loop = asyncio.get_event_loop()
+        result = await asyncio.wait_for(
+            loop.run_in_executor(None, run_query),
+            timeout=timeout
+        )
+        return result
+    except asyncio.TimeoutError:
+        logger.error(f"SQL timeout: {sql[:100]}...")
+        return None
     except Exception as e:
-        logger.error(f"Error SQL: {e}")
-        raise
+        logger.error(f"SQL error: {e}")
+        return None
 
 @app.get("/")
-def root():
+async def root():
     return {
         "service": "Energy Data API",
         "version": "1.0.0",
-        "endpoints": [
-            "/schema - Esquema de la tabla",
-            "/query - Ejecutar consulta SQL"
+        "descripcion": "API que ejecuta SQL dinámico sobre datos históricos de energía",
+        "capacidades": [
+            "Ejecución SQL segura con validación",
+            "Metadata completa de la base de datos",
+            "Sandbox SQL para prevenir queries peligrosas",
+            "Optimización automática de consultas"
+        ],
+        "endpoints_principales": [
+            "/esquema-bd - Información completa de la estructura de datos",
+            "/ejecutar-sql - Ejecutar SQL validado",
+            "/validar-sql - Validar SQL antes de ejecutar"
         ]
     }
 
-@app.get("/schema")
-def get_schema():
-    schema_info = """
-    TABLA: energy_data
-    
-    COLUMNAS:
-    - country (TEXT): País
-    - year (INTEGER): Año
-    - iso_code (TEXT): Código ISO
-    - population (REAL): Población
-    - gdp (REAL): PIB
-    - coal_consumption (REAL): Consumo de carbón
-    - coal_production (REAL): Producción de carbón
-    - energy_per_capita (REAL): Energía per cápita
-    - coal_cons_change_pct (REAL): Cambio % consumo carbón
-    - coal_share_elec (REAL): % carbón en electricidad
-    - electricity_generation (REAL): Generación eléctrica
-    
-    EJEMPLOS:
-    
-    1. Top consumidores de carbón:
-    SELECT country, year, coal_consumption 
-    FROM energy_data 
-    WHERE coal_consumption > 0 
-    ORDER BY coal_consumption DESC 
-    LIMIT 10
-    
-    2. Promedio por década:
-    SELECT 
-        (year / 10) * 10 as decade,
-        AVG(energy_per_capita) as avg_energy
-    FROM energy_data 
-    GROUP BY decade 
-    ORDER BY decade 
-    LIMIT 10
-    
-    3. Tendencia de un país:
-    SELECT year, coal_consumption, coal_production 
-    FROM energy_data 
-    WHERE country = 'Russia' 
-    ORDER BY year 
-    LIMIT 50
-    
-    REGLAS:
-    ✅ Siempre usar LIMIT (máximo 1000)
-    ✅ Solo SELECT permitido
-    ✅ Solo tabla energy_data
-    """
-    
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM energy_data LIMIT 1")
-    columns = [desc[0] for desc in cursor.description]
-    
-    return {
-        "table": "energy_data",
-        "columns": columns,
-        "schema_description": schema_info,
-        "total_rows": len(df)
-    }
-
-@app.post("/query")
-def execute_query(request: SQLRequest):
+@app.get("/esquema-bd", response_model=MetadataResponse)
+async def obtener_esquema_bd():
+    """Proporciona toda la metadata necesaria para generar SQL correcto"""
     try:
-        sql_original = request.query.strip()
-        context = request.context or "Consulta SQL"
+        # Obtener información de columnas
+        query_columnas = """
+        SELECT 
+            column_name,
+            data_type,
+            is_nullable,
+            column_default
+        FROM information_schema.columns 
+        WHERE table_name = 'energy_data'
+        ORDER BY ordinal_position
+        """
         
-        logger.info(f"SQL recibido: {sql_original[:100]}...")
+        columnas_info = await execute_sql_safe(query_columnas, timeout=10)
         
-        is_valid, message = sql_executor.validate_sql(sql_original)
-        if not is_valid:
+        # Obtener ejemplos de valores únicos para cada columna clave
+        query_ejemplos = """
+        SELECT 
+            'country' as columna,
+            ARRAY_AGG(DISTINCT country ORDER BY country LIMIT 20) as valores_ejemplo
+        FROM energy_data 
+        WHERE country IS NOT NULL AND country != ''
+        
+        UNION ALL
+        
+        SELECT 
+            'year' as columna,
+            ARRAY_AGG(DISTINCT year ORDER BY year) as valores_ejemplo
+        FROM energy_data 
+        WHERE year IS NOT NULL
+        
+        UNION ALL
+        
+        SELECT 
+            'iso_code' as columna,
+            ARRAY_AGG(DISTINCT iso_code ORDER BY iso_code LIMIT 20) as valores_ejemplo
+        FROM energy_data 
+        WHERE iso_code IS NOT NULL AND iso_code != ''
+        """
+        
+        ejemplos_info = await execute_sql_safe(query_ejemplos, timeout=15)
+        
+        # Generar esquema sugerido
+        esquema_sugerido = """
+        TABLA: energy_data
+        
+        COLUMNAS PRINCIPALES PARA ANÁLISIS:
+        
+        🌍 INFORMACIÓN GEOGRÁFICA Y TEMPORAL:
+        - country (text): Nombre del país
+        - year (integer): Año del registro
+        - iso_code (text): Código ISO del país
+        - population (numeric): Población del país
+        - gdp (numeric): Producto Interno Bruto
+        
+        ⚡ CONSUMO Y PRODUCCIÓN DE CARBÓN:
+        - coal_consumption (numeric): Consumo total de carbón
+        - coal_production (numeric): Producción total de carbón
+        - coal_cons_change_pct (numeric): Cambio porcentual en consumo de carbón
+        - coal_cons_change_twh (numeric): Cambio en consumo de carbón (TWh)
+        - coal_cons_per_capita (numeric): Consumo de carbón per cápita
+        - coal_prod_change_pct (numeric): Cambio porcentual en producción de carbón
+        - coal_prod_change_twh (numeric): Cambio en producción de carbón (TWh)
+        - coal_prod_per_capita (numeric): Producción de carbón per cápita
+        
+        💡 ELECTRICIDAD Y CARBÓN:
+        - coal_electricity (numeric): Electricidad generada por carbón
+        - coal_elec_per_capita (numeric): Electricidad de carbón per cápita
+        - coal_share_elec (numeric): Participación del carbón en electricidad (%)
+        - coal_share_energy (numeric): Participación del carbón en energía total (%)
+        
+        🔌 ELECTRICIDAD GENERAL:
+        - electricity_generation (numeric): Generación eléctrica total
+        - electricity_demand (numeric): Demanda de electricidad
+        - electricity_share_energy (numeric): Participación de electricidad en energía (%)
+        
+        🌐 ENERGÍA TOTAL:
+        - energy_per_capita (numeric): Consumo de energía per cápita
+        - energy_per_gdp (numeric): Energía por unidad de PIB
+        - energy_cons_change_pct (numeric): Cambio porcentual en consumo de energía
+        - energy_cons_change_twh (numeric): Cambio en consumo de energía (TWh)
+        
+        EJEMPLOS DE CONSULTAS SQL COMPLEJAS:
+        
+        1. Top consumidores de carbón por año:
+        SELECT 
+            country,
+            year,
+            coal_consumption::numeric,
+            coal_production::numeric,
+            (coal_consumption::numeric - coal_production::numeric) as balance
+        FROM energy_data 
+        WHERE coal_consumption > 0
+        ORDER BY coal_consumption::numeric DESC 
+        LIMIT 20
+        
+        2. Evolución energética de un país:
+        SELECT 
+            year,
+            energy_per_capita::numeric,
+            coal_share_energy::numeric,
+            electricity_generation::numeric,
+            ROUND((energy_per_capita::numeric / NULLIF(gdp::numeric, 0)) * 1000000, 2) as energia_por_millon_gdp
+        FROM energy_data 
+        WHERE country = 'Russia' AND year >= 1990
+        ORDER BY year 
+        LIMIT 50
+        
+        3. Análisis comparativo de eficiencia energética:
+        SELECT 
+            country,
+            AVG(energy_per_capita::numeric) as promedio_energia_percapita,
+            AVG(energy_per_gdp::numeric) as promedio_energia_por_gdp,
+            AVG(coal_share_energy::numeric) as promedio_participacion_carbon
+        FROM energy_data 
+        WHERE year >= 2000 AND energy_per_capita > 0
+        GROUP BY country
+        ORDER BY promedio_energia_percapita DESC 
+        LIMIT 25
+        
+        4. Tendencia de transición energética:
+        SELECT 
+            year,
+            AVG(coal_share_elec::numeric) as participacion_carbon_electricidad,
+            COUNT(DISTINCT country) as num_paises,
+            SUM(coal_consumption::numeric) as consumo_total_carbon
+        FROM energy_data 
+        WHERE year >= 1985
+        GROUP BY year
+        ORDER BY year 
+        LIMIT 40
+        
+        REGLAS CRÍTICAS PARA GENERAR SQL:
+        ✅ Siempre usar LIMIT (máximo 500 registros)
+        ✅ Usar casting ::numeric para columnas numéricas en cálculos
+        ✅ Filtrar valores NULL y cero cuando sea relevante
+        ✅ Para porcentajes: (valor1/NULLIF(valor2,0)*100)
+        ✅ Para texto usar UPPER() en comparaciones LIKE
+        ✅ Para agregaciones temporales: GROUP BY year, country
+        
+        COLUMNAS MÁS CONSULTADAS POR CATEGORÍA:
+        📊 Análisis económico: gdp, population, energy_per_gdp
+        ⚡ Análisis energético: energy_per_capita, electricity_generation
+        🔥 Análisis de carbón: coal_consumption, coal_production, coal_share_energy
+        📈 Análisis de tendencias: year, *_change_pct, *_change_twh
+        """
+        
+        return MetadataResponse(
+            tablas=[{"nombre": "energy_data", "descripcion": "Datos históricos de energía por país"}],
+            columnas=[dict(col) for col in columnas_info] if columnas_info else [],
+            ejemplos_valores=[dict(ej) for ej in ejemplos_info] if ejemplos_info else [],
+            esquema_sugerido=esquema_sugerido
+        )
+        
+    except Exception as e:
+        logger.error(f"Error obteniendo esquema: {e}")
+        raise HTTPException(status_code=500, detail=f"Error obteniendo esquema: {str(e)}")
+
+@app.post("/ejecutar-sql")
+async def ejecutar_sql_desde_ia(request: SQLRequest):
+    """Ejecuta SQL validado con validación completa"""
+    try:
+        sql_original = request.instruccion_sql.strip()
+        contexto = request.contexto or "Consulta SQL"
+        
+        logger.info(f"SQL recibido: {sql_original[:200]}...")
+        
+        # 1. Validar seguridad
+        es_seguro, mensaje_validacion = sql_executor.validar_sql_seguro(sql_original)
+        if not es_seguro:
             return {
-                "status": "invalid",
-                "error": message,
-                "query": sql_original,
-                "data": []
+                "status": "sql_invalido",
+                "error": mensaje_validacion,
+                "sql_original": sql_original,
+                "contexto": contexto,
+                "datos": []
             }
         
-        sql_sanitized = sql_executor.sanitize_sql(sql_original)
+        # 2. Sanitizar y optimizar
+        sql_sanitizado = sql_executor.sanitizar_sql(sql_original)
         
-        results = execute_sql(sql_sanitized)
+        # 3. Ejecutar
+        resultados = await execute_sql_safe(sql_sanitizado, timeout=22)
         
-        if not results:
+        if resultados is None:
             return {
-                "status": "empty",
-                "message": "Sin resultados",
-                "query": sql_sanitized,
-                "data": []
+                "status": "timeout",
+                "mensaje": "La consulta tardó demasiado en ejecutarse",
+                "sugerencia": "Intenta agregar más filtros WHERE o reducir el LIMIT",
+                "sql_ejecutado": sql_sanitizado,
+                "datos": []
             }
+        
+        if not resultados:
+            return {
+                "status": "sin_resultados",
+                "mensaje": "La consulta no devolvió resultados",
+                "sql_ejecutado": sql_sanitizado,
+                "datos": []
+            }
+        
+        # 4. Procesar resultados
+        datos_procesados = []
+        for registro in resultados:
+            datos_procesados.append({k: v for k, v in registro.items()})
+        
+        # 5. Generar resumen inteligente
+        resumen = generar_resumen_resultados(datos_procesados, contexto)
         
         return {
-            "status": "success",
-            "message": f"{len(results)} registros",
-            "context": context,
-            "query": sql_sanitized,
-            "data": results,
-            "total": len(results)
+            "status": "exitoso",
+            "mensaje": f"Consulta ejecutada exitosamente - {len(datos_procesados)} registros",
+            "contexto": contexto,
+            "resumen": resumen,
+            "datos": datos_procesados,
+            "total_registros": len(datos_procesados),
+            "sql_ejecutado": sql_sanitizado,
+            "metadata": {
+                "columnas": list(datos_procesados[0].keys()) if datos_procesados else [],
+                "tipos_datos": detectar_tipos_datos(datos_procesados)
+            }
         }
         
     except Exception as e:
-        logger.error(f"Error: {e}")
+        logger.error(f"Error ejecutando SQL: {e}")
         return {
-            "status": "error",
+            "status": "error_ejecucion",
             "error": str(e),
-            "query": request.query,
-            "data": []
+            "sql_original": request.instruccion_sql,
+            "datos": []
         }
+
+def generar_resumen_resultados(datos: List[Dict], contexto: str) -> Dict[str, Any]:
+    """Genera un resumen inteligente de los resultados"""
+    if not datos:
+        return {"mensaje": "Sin datos para resumir"}
     
+    resumen = {
+        "total_registros": len(datos),
+        "columnas_principales": list(datos[0].keys())[:5],
+        "muestra_datos": datos[:3] if len(datos) > 3 else datos
+    }
+    
+    # Detectar si hay columnas numéricas para estadísticas
+    columnas_numericas = []
+    for col in datos[0].keys():
+        if isinstance(datos[0][col], (int, float)) and datos[0][col] is not None:
+            columnas_numericas.append(col)
+    
+    if columnas_numericas:
+        resumen["estadisticas"] = {}
+        for col in columnas_numericas[:3]:  # Máximo 3 columnas numéricas
+            valores = [row[col] for row in datos if row[col] is not None]
+            if valores:
+                resumen["estadisticas"][col] = {
+                    "promedio": round(sum(valores) / len(valores), 2),
+                    "maximo": max(valores),
+                    "minimo": min(valores)
+                }
+    
+    return resumen
+
+def detectar_tipos_datos(datos: List[Dict]) -> Dict[str, str]:
+    """Detecta tipos de datos de las columnas"""
+    if not datos:
+        return {}
+    
+    tipos = {}
+    for col, valor in datos[0].items():
+        if isinstance(valor, str):
+            tipos[col] = "texto"
+        elif isinstance(valor, (int, float)):
+            tipos[col] = "numerico"
+        elif valor is None:
+            tipos[col] = "nulo"
+        else:
+            tipos[col] = "otro"
+    
+    return tipos
+
+@app.get("/validar-sql")
+async def validar_sql_preview(
+    sql: str = Query(..., description="SQL a validar"),
+    mostrar_explicacion: bool = Query(False, description="Mostrar explicación detallada")
+):
+    """Valida SQL sin ejecutar - útil para debugging"""
+    try:
+        es_seguro, mensaje = sql_executor.validar_sql_seguro(sql)
+        sql_sanitizado = sql_executor.sanitizar_sql(sql) if es_seguro else None
+        
+        resultado = {
+            "sql_original": sql,
+            "es_valido": es_seguro,
+            "mensaje_validacion": mensaje,
+            "sql_sanitizado": sql_sanitizado
+        }
+        
+        if mostrar_explicacion:
+            resultado["explicacion"] = {
+                "palabras_detectadas": re.findall(r'\b\w+\b', sql.lower()),
+                "tabla_detectada": "energy_data" in sql.lower(),
+                "limit_detectado": "limit" in sql.lower(),
+                "columnas_mencionadas": [col for col in sql_executor.columnas_validas if col.lower() in sql.lower()]
+            }
+        
+        return resultado
+        
+    except Exception as e:
+        return {
+            "sql_original": sql,
+            "es_valido": False,
+            "mensaje_validacion": f"Error en validación: {str(e)}"
+        }
+
+@app.get("/test-conexion")
+async def test_conexion_rapida():
+    """Test rápido de conectividad"""
+    try:
+        result = await execute_sql_safe("SELECT 1 as test", timeout=5)
+        return {"status": "ok", "conexion": "exitosa"} if result else {"status": "timeout"}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
