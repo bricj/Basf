@@ -1,12 +1,11 @@
 swagger: '2.0'
 info:
   title: Energy Data API
-  description: API para consultas SQL sobre datos históricos de energía por país
+  description: API para ejecutar consultas SQL sobre datos históricos de energía
   version: '1.0.0'
 host: basf-1.onrender.com
 basePath: /
 schemes:
-  - http
   - https
 consumes:
   - application/json
@@ -14,317 +13,286 @@ produces:
   - application/json
 
 paths:
-  /Data:
+  /:
     get:
-      summary: Información del servicio
-      description: Retorna información básica sobre la API y endpoints disponibles
-      operationId: getServiceInfo
-      tags:
-        - General
+      summary: InformaciónServicio
+      operationId: InformaciónServicio
+      parameters: []
       responses:
         200:
-          description: Información del servicio exitosa
+          description: Respuesta exitosa
           schema:
             type: object
             properties:
               service:
                 type: string
-                example: Energy Data API
               version:
                 type: string
-                example: 1.0.0
-              endpoints:
+              descripcion:
+                type: string
+              capacidades:
                 type: array
                 items:
                   type: string
-                example:
-                  - /schema - Esquema de la tabla
-                  - /query - Ejecutar consulta SQL
+              endpoints_principales:
+                type: array
+                items:
+                  type: string
 
-  /schema:
+  /esquema-bd:
     get:
-      summary: Obtener esquema de la tabla
-      description: Retorna el esquema completo de la tabla energy_data con ejemplos de consultas SQL
-      operationId: getSchema
-      tags:
-        - Metadata
+      summary: ObtenerEsquemaBD
+      operationId: ObtenerEsquemaBD
+      parameters: []
       responses:
         200:
-          description: Esquema de la tabla exitoso
+          description: Respuesta exitosa
           schema:
             type: object
-            required:
-              - table
-              - columns
-              - total_rows
             properties:
-              table:
-                type: string
-                description: Nombre de la tabla
-                example: energy_data
-              columns:
+              tablas:
                 type: array
-                description: Lista de columnas disponibles
                 items:
-                  type: string
-                example:
-                  - country
-                  - year
-                  - iso_code
-                  - population
-                  - gdp
-                  - coal_consumption
-                  - coal_production
-                  - energy_per_capita
-              schema_description:
+                  type: object
+                  properties:
+                    nombre:
+                      type: string
+                    descripcion:
+                      type: string
+              columnas:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    column_name:
+                      type: string
+                    data_type:
+                      type: string
+                    is_nullable:
+                      type: string
+                    column_default:
+                      type: string
+              ejemplos_valores:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    columna:
+                      type: string
+                    valores_ejemplo:
+                      type: array
+                      items:
+                        type: string
+              esquema_sugerido:
                 type: string
-                description: Descripción detallada del esquema con ejemplos de consultas
-              total_rows:
-                type: integer
-                description: Total de filas en la tabla
-                example: 38
-
-  /query:
-    post:
-      summary: Ejecutar consulta SQL
-      description: Ejecuta una consulta SQL SELECT validada y segura sobre la tabla energy_data
-      operationId: executeQuery
-      tags:
-        - Query
-      parameters:
-        - name: body
-          in: body
-          description: Consulta SQL a ejecutar
-          required: true
-          schema:
-            $ref: '#/definitions/SQLRequest'
-      responses:
-        200:
-          description: Consulta ejecutada exitosamente
-          schema:
-            $ref: '#/definitions/SQLSuccessResponse'
-        400:
-          description: Consulta inválida o error de validación
-          schema:
-            $ref: '#/definitions/SQLErrorResponse'
         500:
           description: Error interno del servidor
           schema:
-            $ref: '#/definitions/SQLErrorResponse'
+            type: object
+            properties:
+              detail:
+                type: string
 
-definitions:
-  SQLRequest:
-    type: object
-    required:
-      - query
-    properties:
-      query:
-        type: string
-        description: Consulta SQL SELECT (obligatorio incluir LIMIT, máximo 1000)
-        example: SELECT country, year, coal_consumption FROM energy_data WHERE year >= 2000 ORDER BY coal_consumption DESC LIMIT 10
-      context:
-        type: string
-        description: Contexto o descripción de la consulta (opcional)
-        example: Top consumidores de carbón desde el año 2000
+  /ejecutar-sql:
+    post:
+      summary: EjecutarSQL
+      operationId: EjecutarSQL
+      parameters:
+        - name: body
+          in: body
+          required: true
+          schema:
+            type: object
+            required:
+              - instruccion_sql
+            properties:
+              instruccion_sql:
+                type: string
+                description: Consulta SQL SELECT a ejecutar
+                example: SELECT country, year, coal_consumption FROM energy_data WHERE year >= 2000 ORDER BY coal_consumption DESC LIMIT 10
+              parametros:
+                type: object
+                description: Parámetros adicionales (opcional)
+              contexto:
+                type: string
+                description: Contexto de la consulta (opcional)
+                example: Análisis de consumo de carbón
+      responses:
+        200:
+          description: Respuesta exitosa
+          schema:
+            type: object
+            properties:
+              status:
+                type: string
+                enum:
+                  - exitoso
+                  - sql_invalido
+                  - timeout
+                  - sin_resultados
+                  - error_ejecucion
+              mensaje:
+                type: string
+              error:
+                type: string
+              sugerencia:
+                type: string
+              contexto:
+                type: string
+              resumen:
+                type: object
+                properties:
+                  total_registros:
+                    type: integer
+                  columnas_principales:
+                    type: array
+                    items:
+                      type: string
+                  muestra_datos:
+                    type: array
+                    items:
+                      type: object
+                  estadisticas:
+                    type: object
+              datos:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    country:
+                      type: string
+                    year:
+                      type: integer
+                    iso_code:
+                      type: string
+                    population:
+                      type: number
+                    gdp:
+                      type: number
+                    coal_cons_change_pct:
+                      type: number
+                    coal_cons_change_twh:
+                      type: number
+                    coal_cons_per_capita:
+                      type: number
+                    coal_consumption:
+                      type: number
+                    coal_elec_per_capita:
+                      type: number
+                    coal_electricity:
+                      type: number
+                    coal_prod_change_pct:
+                      type: number
+                    coal_prod_change_twh:
+                      type: number
+                    coal_prod_per_capita:
+                      type: number
+                    coal_production:
+                      type: number
+                    coal_share_elec:
+                      type: number
+                    coal_share_energy:
+                      type: number
+                    electricity_demand:
+                      type: number
+                    electricity_generation:
+                      type: number
+                    electricity_share_energy:
+                      type: number
+                    energy_cons_change_pct:
+                      type: number
+                    energy_cons_change_twh:
+                      type: number
+                    energy_per_capita:
+                      type: number
+                    energy_per_gdp:
+                      type: number
+              total_registros:
+                type: integer
+              sql_ejecutado:
+                type: string
+              sql_original:
+                type: string
+              metadata:
+                type: object
+                properties:
+                  columnas:
+                    type: array
+                    items:
+                      type: string
+                  tipos_datos:
+                    type: object
 
-  SQLSuccessResponse:
-    type: object
-    required:
-      - status
-      - message
-      - query
-      - data
-      - total
-    properties:
-      status:
-        type: string
-        enum:
-          - success
-        description: Estado de la ejecución
-        example: success
-      message:
-        type: string
-        description: Mensaje descriptivo del resultado
-        example: 10 registros
-      context:
-        type: string
-        description: Contexto de la consulta
-        example: Top consumidores de carbón
-      query:
-        type: string
-        description: Query SQL ejecutada (sanitizada)
-        example: SELECT country, year, coal_consumption FROM energy_data WHERE year >= 2000 ORDER BY coal_consumption DESC LIMIT 10
-      data:
-        type: array
-        description: Resultados de la consulta
-        items:
-          $ref: '#/definitions/EnergyRecord'
-      total:
-        type: integer
-        description: Total de registros retornados
-        example: 10
+  /validar-sql:
+    get:
+      summary: ValidarSQL
+      operationId: ValidarSQL
+      parameters:
+        - name: sql
+          in: query
+          required: true
+          type: string
+          description: SQL a validar
+        - name: mostrar_explicacion
+          in: query
+          required: false
+          type: boolean
+          description: Mostrar explicación detallada
+      responses:
+        200:
+          description: Respuesta exitosa
+          schema:
+            type: object
+            properties:
+              sql_original:
+                type: string
+              es_valido:
+                type: boolean
+              mensaje_validacion:
+                type: string
+              sql_sanitizado:
+                type: string
+              explicacion:
+                type: object
+                properties:
+                  palabras_detectadas:
+                    type: array
+                    items:
+                      type: string
+                  tabla_detectada:
+                    type: boolean
+                  limit_detectado:
+                    type: boolean
+                  columnas_mencionadas:
+                    type: array
+                    items:
+                      type: string
 
-  SQLErrorResponse:
-    type: object
-    required:
-      - status
-      - error
-      - query
-      - data
-    properties:
-      status:
-        type: string
-        enum:
-          - invalid
-          - empty
-          - error
-        description: Estado de error
-        example: invalid
-      message:
-        type: string
-        description: Mensaje descriptivo (solo para status empty)
-        example: Sin resultados
-      error:
-        type: string
-        description: Descripción del error
-        example: Palabra prohibida drop
-      query:
-        type: string
-        description: Query SQL que causó el error
-        example: DROP TABLE energy_data
-      data:
-        type: array
-        description: Array vacío en caso de error
-        items:
-          type: object
-        example: []
+  /test-conexion:
+    get:
+      summary: TestConexion
+      operationId: TestConexion
+      parameters: []
+      responses:
+        200:
+          description: Respuesta exitosa
+          schema:
+            type: object
+            properties:
+              status:
+                type: string
+                enum:
+                  - ok
+                  - timeout
+                  - error
+              conexion:
+                type: string
+              error:
+                type: string
 
-  EnergyRecord:
-    type: object
-    description: Registro de datos de energía por país y año
-    properties:
-      country:
-        type: string
-        description: Nombre del país
-        example: Russia
-      year:
-        type: integer
-        description: Año del registro
-        example: 2000
-      iso_code:
-        type: string
-        description: Código ISO del país
-        example: RUS
-      population:
-        type: number
-        format: double
-        description: Población del país
-        example: 146844848
-      gdp:
-        type: number
-        format: double
-        description: Producto Interno Bruto (PIB)
-        example: 1540000000000
-      coal_cons_change_pct:
-        type: number
-        format: double
-        description: Cambio porcentual en consumo de carbón
-        example: 3.715
-      coal_cons_change_twh:
-        type: number
-        format: double
-        description: Cambio en consumo de carbón (TWh)
-        example: 44.064
-      coal_cons_per_capita:
-        type: number
-        format: double
-        description: Consumo de carbón per cápita
-        example: 8376.573
-      coal_consumption:
-        type: number
-        format: double
-        description: Consumo total de carbón
-        example: 1230.057
-      coal_elec_per_capita:
-        type: number
-        format: double
-        description: Electricidad de carbón per cápita
-        example: 1129.219
-      coal_electricity:
-        type: number
-        format: double
-        description: Electricidad generada por carbón
-        example: 165.82
-      coal_prod_change_pct:
-        type: number
-        format: double
-        description: Cambio porcentual en producción de carbón
-        example: 3.149
-      coal_prod_change_twh:
-        type: number
-        format: double
-        description: Cambio en producción de carbón (TWh)
-        example: 43.147
-      coal_prod_per_capita:
-        type: number
-        format: double
-        description: Producción de carbón per cápita
-        example: 9624.291
-      coal_production:
-        type: number
-        format: double
-        description: Producción total de carbón
-        example: 1413.278
-      coal_share_elec:
-        type: number
-        format: double
-        description: Participación del carbón en generación eléctrica (%)
-        example: 19.895
-      coal_share_energy:
-        type: number
-        format: double
-        description: Participación del carbón en energía total (%)
-        example: 17.051
-      electricity_demand:
-        type: number
-        format: double
-        description: Demanda de electricidad
-        example: 819.42
-      electricity_generation:
-        type: number
-        format: double
-        description: Generación eléctrica total
-        example: 833.47
-      electricity_share_energy:
-        type: number
-        format: double
-        description: Participación de electricidad en energía total (%)
-        example: 11.553
-      energy_cons_change_pct:
-        type: number
-        format: double
-        description: Cambio porcentual en consumo de energía
-        example: 1.8
-      energy_cons_change_twh:
-        type: number
-        format: double
-        description: Cambio en consumo de energía (TWh)
-        example: 127.553
-      energy_per_capita:
-        type: number
-        format: double
-        description: Consumo de energía per cápita
-        example: 49127.297
-      energy_per_gdp:
-        type: number
-        format: double
-        description: Energía por unidad de PIB
-        example: 4.683
-
-tags:
-  - name: General
-    description: Endpoints de información general
-  - name: Metadata
-    description: Información sobre el esquema de datos
-  - name: Query
-    description: Ejecución de consultas SQL
+definitions: {}
+parameters: {}
+responses: {}
+securityDefinitions: {}
+security: []
+tags: []
