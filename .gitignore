@@ -31,12 +31,16 @@ Thumbs.db
 logs/
 
 # Data files (descomentado para no subir datos sensibles)
-src/api/data/
-src/api/data/data.xlsx
+#src/api/data/
+src/api/data/basf_data.xlsx
+src/api/data/data_complete.csv
+src/api/data/Metadata_World_Energy_Consumption.csv
 
 # Versiones anteriores
 src/api/main_v1.py
 swagger.yaml
+src/api/main_basf.py
+src/api/migrate.py
 
 # Docker
 .dockerignore
